@@ -10,6 +10,8 @@ export function updateGuildConfig(guildId: string, data: {
   technicianRoleId?: string | null;
   verifiedRoleId?: string | null;
   unverifiedRoleId?: string | null;
+  notificationFooterText?: string | null;
+  notificationFooterIconUrl?: string | null;
 }) {
   return db.guildConfig.upsert({ where: { guildId }, create: { guildId, ...data }, update: data });
 }

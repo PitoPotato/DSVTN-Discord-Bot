@@ -4,6 +4,9 @@ import { getGuildConfig } from "./config.service.js";
 
 export class UserFacingError extends Error {}
 
+/** A user attempted an action reserved for a higher role. */
+export class AuthorizationError extends UserFacingError {}
+
 export async function isVerified(guildId: string, userId: string): Promise<boolean> {
   const member = await db.verifiedMember.findUnique({
     where: { guildId_userId: { guildId, userId } },

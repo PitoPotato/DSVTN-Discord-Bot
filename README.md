@@ -69,6 +69,25 @@ Hai role `verified-role` và `unverified-role` là tùy chọn. Hệ thống ch�
 
 Sau khi cấu hình, role `Đội Trưởng` có thể dùng `/config view` và toàn quyền quản lý; role `Technician` quản lý danh sách xác nhận tên.
 
+## Phân quyền RBAC bằng permission chuỗi
+
+Bot dùng RBAC nội bộ, tách biệt với Discord role. Mỗi **role nội bộ** có nhiều permission dạng chuỗi; sau đó liên kết role nội bộ với một hoặc nhiều Discord role. Khi thành viên dùng lệnh, bot lấy toàn bộ Discord role của họ và cộng dồn các permission tương ứng.
+
+Các permission hiện có gồm: `admin.help`, `access.manage`, `config.manage`, `identity.read`, `identity.write`, `reaction_role.manage`, `system.check`, `technician.manage`. Có thể dùng wildcard `identity.*` hoặc `*` cho role được tin cậy, nhưng nên cấp từng permission cụ thể trong môi trường vận hành.
+
+Discord Administrator luôn có toàn quyền để bootstrap và khôi phục cấu hình. Hai role cũ `Đội Trưởng` và `Technician` được tự chuyển thành role hệ thống tương thích khi bot kiểm tra quyền, nên server hiện hữu không bị gián đoạn.
+
+Ví dụ tạo một role quản lý xác nhận tên:
+
+```text
+/access role-create key:identity-manager name:"Quản lý xác nhận tên"
+/access permission-grant role:identity-manager permission:identity.read
+/access permission-grant role:identity-manager permission:identity.write
+/access bind role:identity-manager discord-role:@Ban Nhân sự
+```
+
+Dùng `/access permissions` để xem danh mục, `/access role-list` để kiểm tra role, và `/access member-permissions member:@user` để xem permission thực tế của một thành viên. Role hệ thống không sửa trực tiếp; hãy tạo role tùy chỉnh khi muốn phân quyền mới.
+
 ## Danh sách lệnh
 
 ### Thành viên

@@ -11,9 +11,13 @@ function panel(style: ReactionRoleStyle, items = 2): PanelWithItems {
     action: ReactionRoleAction.TOGGLE,
     maxSelections: 2,
     title: "Chọn role",
+    titleUrl: "https://example.com/title",
     description: "Bạn có thể chọn role.",
     color: 0x3498db,
+    authorName: "DSVTN",
+    authorIconUrl: "https://example.com/author.png",
     footer: "DSVTN",
+    footerIconUrl: "https://example.com/footer.png",
     imageUrl: null,
     thumbnailUrl: null,
     channelId: null,
@@ -51,6 +55,9 @@ describe("reaction role renderer", () => {
     const payload = buildPanelMessage(panel(ReactionRoleStyle.MENU));
     const row = payload.components[0].toJSON();
     expect(payload.embeds[0].data.title).toBe("Chọn role");
+    expect(payload.embeds[0].data.url).toBe("https://example.com/title");
+    expect(payload.embeds[0].data.author).toEqual({ name: "DSVTN", icon_url: "https://example.com/author.png" });
+    expect(payload.embeds[0].data.footer).toEqual({ text: "DSVTN", icon_url: "https://example.com/footer.png" });
     expect(payload.embeds[0].data.fields).toEqual([{ name: "Lưu ý", value: "Chọn role phù hợp.", inline: false }]);
     expect(row.components[0]).toMatchObject({ type: 3, max_values: 2, min_values: 1 });
   });

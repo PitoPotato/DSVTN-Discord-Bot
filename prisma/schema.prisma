@@ -14,8 +14,55 @@ model GuildConfig {
   technicianRoleId     String?
   verifiedRoleId       String?
   unverifiedRoleId     String?
+  notificationFooterText String?
+  notificationFooterIconUrl String?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
+}
+
+/// A bot-level role.  It is deliberately separate from Discord's Role object:
+/// one authorization role can be linked to one or more Discord roles and owns
+/// a set of string permissions.
+model AuthorizationRole {
+  id          String                        @id @default(cuid())
+  guildId     String
+  key         String
+  name        String
+  description String?
+  isSystem    Boolean                       @default(false)
+  createdAt   DateTime                      @default(now())
+  updatedAt   DateTime                      @updatedAt
+  permissions AuthorizationRolePermission[]
+  bindings    AuthorizationRoleBinding[]
+
+  @@unique([guildId, key])
+  @@index([guildId])
+}
+
+/// Each permission is stored as a human-readable string, for example
+/// `identity.write` or `reaction_role.manage`; no bitmasks are used.
+model AuthorizationRolePermission {
+  id        String            @id @default(cuid())
+  roleId    String
+  permission String
+  createdAt DateTime          @default(now())
+  role      AuthorizationRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permission])
+  @@index([permission])
+}
+
+/// Maps a Discord role to an authorization role. A Discord role may carry
+/// several bot authorization roles if needed.
+model AuthorizationRoleBinding {
+  id            String            @id @default(cuid())
+  roleId        String
+  discordRoleId String
+  createdAt     DateTime          @default(now())
+  role          AuthorizationRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, discordRoleId])
+  @@index([discordRoleId])
 }
 
 enum ReactionRoleStyle {
@@ -37,9 +84,13 @@ model ReactionRolePanel {
   action        ReactionRoleAction
   maxSelections Int                 @default(1)
   title         String
+  titleUrl      String?
   description   String?
   color         Int                 @default(3447003)
+  authorName    String?
+  authorIconUrl String?
   footer        String?
+  footerIconUrl String?
   imageUrl      String?
   thumbnailUrl  String?
   channelId     String?

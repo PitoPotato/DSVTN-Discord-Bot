@@ -1,5 +1,6 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
+import { logTerminal } from "./terminal-log.service.js";
 
 export type ErrorContext = {
   action: string;
@@ -26,12 +27,22 @@ export async function logBotError(context: ErrorContext, error: unknown): Promis
   ].filter(Boolean).join(" | ");
   const entry = `${header}${metadata ? `\n${metadata}` : ""}\n${details}\n${"-".repeat(80)}\n`;
 
-  console.error(entry);
+  logTerminal({
+    status: "failure",
+    action: context.action,
+    userId: context.userId,
+    guildId: context.guildId,
+    detail: error instanceof Error ? error.message : String(error),
+  });
   try {
     await mkdir(logDirectory, { recursive: true });
     await appendFile(path.join(logDirectory, `${date}.log`), entry, "utf8");
   } catch (logError) {
-    console.error("Không thể ghi file log:", logError);
+    logTerminal({
+      status: "failure",
+      action: "Ghi file log",
+      detail: logError instanceof Error ? logError.message : String(logError),
+    });
   }
 }
 

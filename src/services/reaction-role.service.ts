@@ -19,7 +19,7 @@ import {
 import { Prisma, ReactionRoleAction, ReactionRolePanel, ReactionRoleStyle } from "@prisma/client";
 import { db } from "../db.js";
 import { errorEmbed, infoEmbed, successEmbed } from "../embeds.js";
-import { getGuildConfig } from "./config.service.js";
+import { isAuthorizationDiscordRole } from "./permission.service.js";
 import { UserFacingError } from "./identity.service.js";
 
 export type PanelWithItems = Prisma.ReactionRolePanelGetPayload<{ include: { items: true; fields: true } }>;
@@ -30,13 +30,23 @@ export async function createPanel(input: {
   style: ReactionRoleStyle;
   action: ReactionRoleAction;
   title: string;
+  titleUrl?: string | null;
   description?: string | null;
+  color?: number;
+  authorName?: string | null;
+  authorIconUrl?: string | null;
+  footer?: string | null;
+  footerIconUrl?: string | null;
+  imageUrl?: string | null;
+  thumbnailUrl?: string | null;
   maxSelections?: number | null;
   createdBy: string;
 }) {
   const name = input.name.trim();
   validatePanelText(input.title, input.description ?? null);
   if (!name) throw new UserFacingError("Tên quản lý của panel không được để trống.");
+  const details = normalizeEmbedDetails(input);
+  validateEmbedDetails(details);
   return db.reactionRolePanel.create({
     data: {
       guildId: input.guildId,
@@ -45,6 +55,8 @@ export async function createPanel(input: {
       action: input.action,
       title: input.title.trim(),
       description: input.description?.trim() || null,
+      color: input.color,
+      ...details,
       maxSelections: input.maxSelections ?? 1,
       createdBy: input.createdBy,
     },
@@ -71,11 +83,26 @@ export async function getPanelById(panelId: string): Promise<PanelWithItems> {
   return panel;
 }
 
-export async function updatePanel(panel: { id: string; title: string; description: string | null }, input: {
+export async function updatePanel(panel: {
+  id: string;
+  title: string;
+  description: string | null;
+  titleUrl: string | null;
+  authorName: string | null;
+  authorIconUrl: string | null;
+  footer: string | null;
+  footerIconUrl: string | null;
+  imageUrl: string | null;
+  thumbnailUrl: string | null;
+}, input: {
   title?: string;
+  titleUrl?: string | null;
   description?: string | null;
   color?: number;
+  authorName?: string | null;
+  authorIconUrl?: string | null;
   footer?: string | null;
+  footerIconUrl?: string | null;
   imageUrl?: string | null;
   thumbnailUrl?: string | null;
   maxSelections?: number;
@@ -83,7 +110,17 @@ export async function updatePanel(panel: { id: string; title: string; descriptio
   const title = input.title ?? panel.title;
   const description = input.description === undefined ? panel.description : input.description;
   validatePanelText(title, description);
-  return db.reactionRolePanel.update({ where: { id: panel.id }, data: input });
+  const details = normalizeEmbedDetails({
+    titleUrl: input.titleUrl === undefined ? panel.titleUrl : input.titleUrl,
+    authorName: input.authorName === undefined ? panel.authorName : input.authorName,
+    authorIconUrl: input.authorIconUrl === undefined ? panel.authorIconUrl : input.authorIconUrl,
+    footer: input.footer === undefined ? panel.footer : input.footer,
+    footerIconUrl: input.footerIconUrl === undefined ? panel.footerIconUrl : input.footerIconUrl,
+    imageUrl: input.imageUrl === undefined ? panel.imageUrl : input.imageUrl,
+    thumbnailUrl: input.thumbnailUrl === undefined ? panel.thumbnailUrl : input.thumbnailUrl,
+  });
+  validateEmbedDetails(details);
+  return db.reactionRolePanel.update({ where: { id: panel.id }, data: { ...input, ...details } });
 }
 
 export async function addItem(input: {
@@ -127,11 +164,56 @@ export function noneToNull(value: string | null): string | null | undefined {
   return value.trim().toLowerCase() === "none" ? null : value.trim();
 }
 
+export function validateHttpUrl(value: string, label: string): void {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("Unsupported protocol");
+  } catch {
+    throw new UserFacingError(`${label} phải là URL http hoặc https hợp lệ.`);
+  }
+}
+
+function normalizeEmbedDetails(input: {
+  titleUrl?: string | null;
+  authorName?: string | null;
+  authorIconUrl?: string | null;
+  footer?: string | null;
+  footerIconUrl?: string | null;
+  imageUrl?: string | null;
+  thumbnailUrl?: string | null;
+}) {
+  return Object.fromEntries(Object.entries(input).map(([key, value]) => [key, typeof value === "string" ? value.trim() || null : value])) as {
+    titleUrl: string | null;
+    authorName: string | null;
+    authorIconUrl: string | null;
+    footer: string | null;
+    footerIconUrl: string | null;
+    imageUrl: string | null;
+    thumbnailUrl: string | null;
+  };
+}
+
+function validateEmbedDetails(details: ReturnType<typeof normalizeEmbedDetails>) {
+  if (details.authorIconUrl && !details.authorName) throw new UserFacingError("Cần có tên tác giả trước khi đặt icon tác giả.");
+  if (details.footerIconUrl && !details.footer) throw new UserFacingError("Cần có nội dung footer trước khi đặt icon footer.");
+  for (const [label, url] of [
+    ["Title URL", details.titleUrl],
+    ["URL icon tác giả", details.authorIconUrl],
+    ["URL icon footer", details.footerIconUrl],
+    ["URL ảnh", details.imageUrl],
+    ["URL thumbnail", details.thumbnailUrl],
+  ] as const) {
+    if (url) validateHttpUrl(url, label);
+  }
+}
+
 export function buildPanelMessage(panel: PanelWithItems) {
   const embed = new EmbedBuilder().setColor(panel.color).setTitle(panel.title);
+  if (panel.titleUrl) embed.setURL(panel.titleUrl);
   if (panel.description) embed.setDescription(panel.description);
   if (panel.fields.length) embed.addFields(panel.fields.map((field) => ({ name: field.name, value: field.value, inline: field.inline })));
-  if (panel.footer) embed.setFooter({ text: panel.footer });
+  if (panel.authorName) embed.setAuthor({ name: panel.authorName, ...(panel.authorIconUrl ? { iconURL: panel.authorIconUrl } : {}) });
+  if (panel.footer) embed.setFooter({ text: panel.footer, ...(panel.footerIconUrl ? { iconURL: panel.footerIconUrl } : {}) });
   if (panel.imageUrl) embed.setImage(panel.imageUrl);
   if (panel.thumbnailUrl) embed.setThumbnail(panel.thumbnailUrl);
 
@@ -223,6 +305,13 @@ export function buildVisualModal(panel: PanelWithItems): ModalBuilder {
     .setMaxLength(4000)
     .setRequired(false)
     .setValue(panel.thumbnailUrl ?? "");
+  const footerIcon = new TextInputBuilder()
+    .setCustomId("footer-icon-url")
+    .setLabel("URL icon footer (để trống để xóa)")
+    .setStyle(TextInputStyle.Short)
+    .setMaxLength(4000)
+    .setRequired(false)
+    .setValue(panel.footerIconUrl ?? "");
 
   return new ModalBuilder()
     .setCustomId(`rrbmodal:${panel.id}:visual`)
@@ -231,6 +320,40 @@ export function buildVisualModal(panel: PanelWithItems): ModalBuilder {
       new ActionRowBuilder<TextInputBuilder>().addComponents(color),
       new ActionRowBuilder<TextInputBuilder>().addComponents(image),
       new ActionRowBuilder<TextInputBuilder>().addComponents(thumbnail),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(footerIcon),
+    );
+}
+
+export function buildAuthorModal(panel: PanelWithItems): ModalBuilder {
+  const titleUrl = new TextInputBuilder()
+    .setCustomId("title-url")
+    .setLabel("URL khi bấm vào tiêu đề")
+    .setStyle(TextInputStyle.Short)
+    .setMaxLength(4000)
+    .setRequired(false)
+    .setValue(panel.titleUrl ?? "");
+  const authorName = new TextInputBuilder()
+    .setCustomId("author-name")
+    .setLabel("Tên tác giả (để trống để xóa)")
+    .setStyle(TextInputStyle.Short)
+    .setMaxLength(256)
+    .setRequired(false)
+    .setValue(panel.authorName ?? "");
+  const authorIcon = new TextInputBuilder()
+    .setCustomId("author-icon-url")
+    .setLabel("URL icon tác giả (để trống để xóa)")
+    .setStyle(TextInputStyle.Short)
+    .setMaxLength(4000)
+    .setRequired(false)
+    .setValue(panel.authorIconUrl ?? "");
+
+  return new ModalBuilder()
+    .setCustomId(`rrbmodal:${panel.id}:author`)
+    .setTitle(`Chỉnh tác giả: ${panel.name}`.slice(0, 45))
+    .addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(titleUrl),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(authorName),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(authorIcon),
     );
 }
 
@@ -280,11 +403,10 @@ export async function refreshPanel(panel: PanelWithItems, guild: Guild): Promise
 }
 
 export async function ensureAssignableRole(guild: Guild, role: Role): Promise<void> {
-  const config = await getGuildConfig(guild.id);
   if (role.id === guild.id || role.managed) throw new UserFacingError("Không thể dùng role @everyone hoặc role do integration quản lý.");
   if (role.permissions.has(PermissionFlagsBits.Administrator)) throw new UserFacingError("Không thể đưa role Administrator vào reaction role.");
-  if (role.id === config.leaderRoleId || role.id === config.technicianRoleId) {
-    throw new UserFacingError("Không thể đưa role Đội Trưởng hoặc Technician vào reaction role.");
+  if (await isAuthorizationDiscordRole(guild.id, role.id)) {
+    throw new UserFacingError("Không thể đưa Discord role đang mang quyền quản trị bot vào reaction role.");
   }
   const me = await guild.members.fetchMe();
   if (role.position >= me.roles.highest.position) throw new UserFacingError("Role này cao hơn hoặc bằng role của bot nên bot không thể quản lý.");
