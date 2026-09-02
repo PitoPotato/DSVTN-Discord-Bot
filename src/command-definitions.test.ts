@@ -14,7 +14,7 @@ describe("slash command definitions", () => {
 
   it("includes the help, identity, reaction role, and system-check command surface", () => {
     expect(commands.map((command) => command.name)).toEqual(expect.arrayContaining([
-      "doiten", "help", "helpadmin", "identity", "technician", "config", "access", "reaction-role", "system-check",
+      "doiten", "help", "ping", "helpadmin", "identity", "technician", "config", "access", "reaction-role", "system-check",
     ]));
     const reactionRole = commands.find((command) => command.name === "reaction-role");
     expect(reactionRole?.options?.map((option) => option.name)).toEqual(expect.arrayContaining([
@@ -23,6 +23,8 @@ describe("slash command definitions", () => {
       "field-add", "field-remove", "field-list",
       "publish", "refresh",
     ]));
+    const panelList = reactionRole?.options?.find((option) => option.name === "panel-list") as { options?: Array<{ name: string }> } | undefined;
+    expect(panelList?.options?.map((option) => option.name)).toContain("page");
     const config = commands.find((command) => command.name === "config");
     expect(config?.options?.map((option) => option.name)).toEqual(expect.arrayContaining([
       "setup", "notification-footer", "view",
@@ -34,11 +36,13 @@ describe("slash command definitions", () => {
     ]));
   });
 
-  it("keeps only /doiten and /help enabled for ordinary members by default", () => {
+  it("keeps only /doiten, /help, and /ping enabled for ordinary members by default", () => {
     const doiten = commands.find((command) => command.name === "doiten") as CommandJson & { default_member_permissions?: string | null };
     expect(doiten.default_member_permissions).toBeUndefined();
     const help = commands.find((command) => command.name === "help") as CommandJson & { default_member_permissions?: string | null };
     expect(help.default_member_permissions).toBeUndefined();
+    const ping = commands.find((command) => command.name === "ping") as CommandJson & { default_member_permissions?: string | null };
+    expect(ping.default_member_permissions).toBeUndefined();
     for (const name of ["helpadmin", "identity", "technician", "config", "access", "reaction-role", "system-check"]) {
       const command = commands.find((candidate) => candidate.name === name) as CommandJson & { default_member_permissions?: string | null };
       expect(command.default_member_permissions).toBe("0");

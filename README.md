@@ -16,6 +16,7 @@ Hướng dẫn đầy đủ để cài đặt và vận hành: [HUONG_DAN_VAN_HA
   - mọi trường hợp trên đều gửi DM (nếu Discord cho phép) và một warning có tag tại channel `#doi-ten` đã cấu hình. Warning ở `#doi-ten` được giữ lại.
 - `Đội Trưởng` quản lý Technician; `Đội Trưởng` và `Technician` quản lý danh sách xác nhận tên.
 - Reaction role dạng embed: button hoặc menu; hỗ trợ chỉ lấy role, chỉ gỡ role, hoặc toggle lấy/gỡ role.
+- `/ping` đo độ trễ Discord và database ngay tại thời điểm gọi lệnh.
 - Panel reaction role không thể cấp role `Đội Trưởng`, `Technician`, role Administrator, role integration hay role cao hơn bot.
 
 ## Cài đặt
@@ -147,7 +148,7 @@ Discord chỉ cho slash command dùng chữ thường, nên tên thực tế là
 ### Quản lý panel
 
 ```text
-/reaction-role panel-list
+/reaction-role panel-list page:1
 /reaction-role panel-info name:"ban-hoat-dong"
 /reaction-role panel-edit name:"ban-hoat-dong" color:#3498DB footer:"DSVTN - HCMUS"
 /reaction-role item-list panel:"ban-hoat-dong"
@@ -166,7 +167,9 @@ Trong `panel-edit`, truyền `none` cho `description`, `footer`, `image-url` ho�
 /reaction-role builder name:"ban-hoat-dong"
 ```
 
-Mở preview riêng tư cùng button `Chỉnh nội dung`, `Chỉnh giao diện`, `Thêm field` và channel picker để publish. Các button mở Modal để nhập text trực quan; submit sẽ lưu database và tự cập nhật panel đã publish.
+Mở preview riêng tư cùng button `Chỉnh nội dung`, `Chỉnh giao diện`, `Thêm field`, `Thêm button` (hoặc `Thêm option` với panel Menu) và channel picker để publish. Khi thêm role từ Builder, chọn role trong role picker rồi nhập nhãn, emoji và mô tả trong Modal; submit sẽ lưu database và tự cập nhật panel đã publish.
+
+Các lệnh danh sách có nhiều trang hiển thị nút `← Trước` và `Sau →`; bấm nút sẽ cập nhật chính message riêng tư đang xem. `/reaction-role panel-list` liệt kê toàn bộ panel theo thời điểm cập nhật, chỉ gồm tên và mốc cập nhật. Nếu chạy `/reaction-role builder` với một tên chưa tồn tại, bot sẽ hỏi xác nhận tạo panel trống. Khi đồng ý, Builder được mở ngay cho panel mới (mặc định Button + lấy/gỡ role); mọi nội dung embed ban đầu đều để trống.
 
 Embed field cũng được quản lý bằng `/reaction-role field-add`, `/reaction-role field-list` và `/reaction-role field-remove`.
 

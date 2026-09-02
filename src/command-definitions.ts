@@ -11,6 +11,10 @@ export const commandDefinitions = [
     .setDescription("Xem các lệnh dành cho thành viên"),
 
   new SlashCommandBuilder()
+    .setName("ping")
+    .setDescription("Kiểm tra độ trễ Discord và database"),
+
+  new SlashCommandBuilder()
     .setName("helpadmin")
     .setDescription("Xem các lệnh dành cho Technician và Đội Trưởng")
     .setDefaultMemberPermissions(0n),
@@ -126,7 +130,8 @@ export const commandDefinitions = [
       .addStringOption((option) => option.setName("image-url").setDescription("URL ảnh lớn; dùng none để xóa"))
       .addStringOption((option) => option.setName("thumbnail-url").setDescription("URL thumbnail; dùng none để xóa"))
       .addIntegerOption((option) => option.setName("max-selections").setDescription("Số role chọn tối đa (chỉ menu)").setMinValue(1).setMaxValue(25)))
-    .addSubcommand((subcommand) => subcommand.setName("panel-list").setDescription("Liệt kê panel hiện có"))
+    .addSubcommand((subcommand) => subcommand.setName("panel-list").setDescription("Liệt kê toàn bộ reaction role theo lần cập nhật")
+      .addIntegerOption((option) => option.setName("page").setDescription("Trang, mặc định là 1").setMinValue(1)))
     .addSubcommand((subcommand) => subcommand.setName("builder").setDescription("Mở trình chỉnh panel bằng Modal")
       .addStringOption((option) => option.setName("name").setDescription("Tên panel").setRequired(true)))
     .addSubcommand((subcommand) => subcommand.setName("panel-info").setDescription("Xem cấu hình một panel")

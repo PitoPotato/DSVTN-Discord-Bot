@@ -208,7 +208,8 @@ function validateEmbedDetails(details: ReturnType<typeof normalizeEmbedDetails>)
 }
 
 export function buildPanelMessage(panel: PanelWithItems) {
-  const embed = new EmbedBuilder().setColor(panel.color).setTitle(panel.title);
+  const embed = new EmbedBuilder().setColor(panel.color);
+  if (panel.title) embed.setTitle(panel.title);
   if (panel.titleUrl) embed.setURL(panel.titleUrl);
   if (panel.description) embed.setDescription(panel.description);
   if (panel.fields.length) embed.addFields(panel.fields.map((field) => ({ name: field.name, value: field.value, inline: field.inline })));
@@ -217,7 +218,8 @@ export function buildPanelMessage(panel: PanelWithItems) {
   if (panel.imageUrl) embed.setImage(panel.imageUrl);
   if (panel.thumbnailUrl) embed.setThumbnail(panel.thumbnailUrl);
 
-  if (!panel.items.length) return { embeds: [embed], components: [] };
+  const embeds = hasEmbedContent(panel) ? [embed] : [];
+  if (!panel.items.length) return { embeds, components: [] };
   if (panel.style === ReactionRoleStyle.MENU) {
     const menu = new StringSelectMenuBuilder()
       .setCustomId(`rr:${panel.id}:m`)
@@ -231,7 +233,7 @@ export function buildPanelMessage(panel: PanelWithItems) {
         ...(item.emoji ? { emoji: item.emoji } : {}),
         ...(item.description ? { description: item.description } : {}),
       })));
-    return { embeds: [embed], components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu)] };
+    return { embeds, components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu)] };
   }
 
   const rows: ActionRowBuilder<ButtonBuilder>[] = [];
@@ -247,7 +249,11 @@ export function buildPanelMessage(panel: PanelWithItems) {
     });
     rows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(buttons));
   }
-  return { embeds: [embed], components: rows };
+  return { embeds, components: rows };
+}
+
+function hasEmbedContent(panel: PanelWithItems): boolean {
+  return Boolean(panel.title || panel.description || panel.fields.length || panel.authorName || panel.footer || panel.imageUrl || panel.thumbnailUrl);
 }
 
 export function buildContentModal(panel: PanelWithItems): ModalBuilder {
@@ -256,7 +262,7 @@ export function buildContentModal(panel: PanelWithItems): ModalBuilder {
     .setLabel("Tiêu đề embed")
     .setStyle(TextInputStyle.Short)
     .setMaxLength(256)
-    .setRequired(true)
+    .setRequired(false)
     .setValue(panel.title);
   const description = new TextInputBuilder()
     .setCustomId("description")
@@ -387,6 +393,37 @@ export function buildFieldModal(panel: PanelWithItems): ModalBuilder {
     );
 }
 
+export function buildItemModal(panel: PanelWithItems, roleId: string, roleName: string): ModalBuilder {
+  const label = new TextInputBuilder()
+    .setCustomId("label")
+    .setLabel("Nhãn button / option")
+    .setStyle(TextInputStyle.Short)
+    .setMaxLength(80)
+    .setRequired(true)
+    .setValue(roleName.slice(0, 80));
+  const emoji = new TextInputBuilder()
+    .setCustomId("emoji")
+    .setLabel("Emoji (không bắt buộc)")
+    .setStyle(TextInputStyle.Short)
+    .setMaxLength(100)
+    .setRequired(false);
+  const description = new TextInputBuilder()
+    .setCustomId("description")
+    .setLabel("Mô tả option menu (không bắt buộc)")
+    .setStyle(TextInputStyle.Paragraph)
+    .setMaxLength(100)
+    .setRequired(false);
+
+  return new ModalBuilder()
+    .setCustomId(`rrbmodal:${panel.id}:add-item:${roleId}`)
+    .setTitle(`Thêm ${panel.style === ReactionRoleStyle.BUTTON ? "button" : "option"}: ${panel.name}`.slice(0, 45))
+    .addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(label),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(emoji),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(description),
+    );
+}
+
 export async function publishPanel(panel: PanelWithItems, channel: { send: (options: ReturnType<typeof buildPanelMessage>) => Promise<Message> }) {
   const sent = await channel.send(buildPanelMessage(panel));
   const updated = await db.reactionRolePanel.update({ where: { id: panel.id }, data: { channelId: sent.channel.id, messageId: sent.id } });
@@ -464,6 +501,6 @@ export async function handleReactionRoleComponent(interaction: ButtonInteraction
 }
 
 function validatePanelText(title: string, description: string | null) {
-  if (!title.trim() || title.length > 256) throw new UserFacingError("Tiêu đề embed phải có từ 1 đến 256 ký tự.");
+  if (title.length > 256) throw new UserFacingError("Tiêu đề embed chỉ được tối đa 256 ký tự.");
   if (description && description.length > 4096) throw new UserFacingError("Nội dung embed chỉ được tối đa 4096 ký tự.");
 }

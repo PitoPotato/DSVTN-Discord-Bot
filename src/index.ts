@@ -11,7 +11,9 @@ import {
   MessageFlags,
   Message,
   Partials,
+  RoleSelectMenuBuilder,
 } from "discord.js";
+import { randomUUID } from "node:crypto";
 import { db } from "./db.js";
 import { env } from "./env.js";
 import { errorEmbed, infoEmbed, successEmbed } from "./embeds.js";
@@ -29,6 +31,7 @@ import {
   addItem,
   addEmbedField,
   buildFieldModal,
+  buildItemModal,
   createPanel,
   ensureAssignableRole,
   getPanel,
@@ -64,6 +67,8 @@ const client = new Client({
   ],
   partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
+
+const pendingBuilderCreates = new Map<string, { guildId: string; userId: string; name: string }>();
 
 client.once("clientReady", (readyClient) => {
   logTerminal({ status: "success", action: "Bot đã sẵn sàng", detail: readyClient.user.tag });
@@ -143,17 +148,34 @@ client.on("interactionCreate", async (interaction) => {
     const guild = interaction.guild;
     await withGuildNotificationFooter(guild.id, async () => {
     const isBuilderModal = interaction.isModalSubmit() && interaction.customId.startsWith("rrbmodal:");
-    const isBuilderPublish = interaction.isChannelSelectMenu() && interaction.customId.startsWith("rrb:");
+    const isBuilderSelection = interaction.isChannelSelectMenu() && interaction.customId.startsWith("rrb:");
+    const isBuilderCreate = interaction.isButton() && interaction.customId.startsWith("rrbnew:");
+    const isListPagination = interaction.isButton() && interaction.customId.startsWith("listp:");
 
     // Discord requires a slash-command acknowledgement within 3 seconds. Supabase
     // can take longer on its first query, so acknowledge before any database work.
-    if (interaction.isChatInputCommand() || isBuilderModal || isBuilderPublish) {
+    if (interaction.isChatInputCommand() || isBuilderModal) {
       try {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       } catch (error) {
         logInteractionOutcome(interaction, "failure", "Interaction đã hết hạn trước khi bot phản hồi");
         return;
       }
+    }
+
+    if (isBuilderSelection || isBuilderCreate || isListPagination) {
+      try {
+        await interaction.deferUpdate();
+      } catch (error) {
+        logInteractionOutcome(interaction, "failure", "Interaction đã hết hạn trước khi bot phản hồi");
+        return;
+      }
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === "ping") {
+      await handlePingCommand(interaction);
+      logInteractionOutcome(interaction, "success");
+      return;
     }
 
     const member = interaction.member instanceof GuildMember ? interaction.member : await guild.members.fetch(interaction.user.id);
@@ -165,6 +187,12 @@ client.on("interactionCreate", async (interaction) => {
 
     if (interaction.isChatInputCommand() && interaction.commandName === "help") {
       await handleHelpCommand(interaction);
+      logInteractionOutcome(interaction, "success");
+      return;
+    }
+
+    if (isListPagination) {
+      await handleListPagination(interaction, member);
       logInteractionOutcome(interaction, "success");
       return;
     }
@@ -185,7 +213,17 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    if ((interaction.isButton() || interaction.isChannelSelectMenu()) && interaction.customId.startsWith("rrb:")) {
+    if (isBuilderCreate) {
+      await handleBuilderCreateConfirmation(interaction, member).then(() => {
+        logInteractionOutcome(interaction, "success");
+      }).catch(async (error) => {
+        await logInteractionFailure(interaction, error);
+        await replyBuilderError(interaction, error);
+      });
+      return;
+    }
+
+    if ((interaction.isButton() || interaction.isChannelSelectMenu() || interaction.isRoleSelectMenu()) && interaction.customId.startsWith("rrb:")) {
       await handleBuilderComponent(interaction, member).then(() => {
         logInteractionOutcome(interaction, "success");
       }).catch(async (error) => {
@@ -280,7 +318,24 @@ async function handleHelpCommand(interaction: import("discord.js").ChatInputComm
     embeds: [infoEmbed("Hướng dẫn lệnh thành viên", [
       "`/doiten name:<Họ và tên>` — xác nhận tên hiển thị.",
       "`/help` — xem danh sách lệnh này.",
+      "`/ping` — kiểm tra độ trễ Discord và database.",
       "\nSau khi xác nhận tên, bạn có thể dùng các panel role do đội ngũ tạo.",
+    ].join("\n"))],
+  });
+}
+
+async function handlePingCommand(interaction: import("discord.js").ChatInputCommandInteraction) {
+  const databaseStartedAt = Date.now();
+  await db.$queryRaw`SELECT 1`;
+  const databaseLatency = Date.now() - databaseStartedAt;
+  const roundTripLatency = Date.now() - interaction.createdTimestamp;
+  const botRoundTripLatency = Math.max(0, roundTripLatency - databaseLatency);
+
+  await interaction.editReply({
+    embeds: [infoEmbed("Ping", [
+      `Người dùng → bot → database → người dùng: **${roundTripLatency} ms**`,
+      `Người dùng → bot → người dùng (không gồm database): **${botRoundTripLatency} ms**`,
+      `Bot → database → bot: **${databaseLatency} ms**`,
     ].join("\n"))],
   });
 }
@@ -301,6 +356,167 @@ async function handleHelpAdminCommand(interaction: import("discord.js").ChatInpu
   await interaction.editReply({ embeds: [infoEmbed("Hướng dẫn lệnh quản trị", sections.join("\n"))] });
 }
 
+function paginationComponents(prefix: string, page: number, total: number): ActionRowBuilder<ButtonBuilder>[] {
+  const totalPages = Math.max(1, Math.ceil(total / 10));
+  if (totalPages <= 1) return [];
+  return [new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`${prefix}:${page - 1}`).setLabel("← Trước").setStyle(ButtonStyle.Secondary).setDisabled(page <= 1),
+    new ButtonBuilder().setCustomId(`${prefix}:current`).setLabel(`Trang ${page}/${totalPages}`).setStyle(ButtonStyle.Secondary).setDisabled(true),
+    new ButtonBuilder().setCustomId(`${prefix}:${page + 1}`).setLabel("Sau →").setStyle(ButtonStyle.Secondary).setDisabled(page >= totalPages),
+  )];
+}
+
+function validPage(value: string | undefined): number {
+  const page = Number(value);
+  if (!Number.isInteger(page) || page < 1) throw new UserFacingError("Trang không hợp lệ.");
+  return page;
+}
+
+async function buildIdentityListPage(guildId: string, page: number) {
+  const take = 10;
+  const [members, total] = await Promise.all([
+    db.verifiedMember.findMany({ where: { guildId, isActive: true }, orderBy: { fullName: "asc" }, skip: (page - 1) * take, take }),
+    db.verifiedMember.count({ where: { guildId, isActive: true } }),
+  ]);
+  if (!members.length) throw new UserFacingError(page === 1 ? "Chưa có thành viên nào đổi tên." : "Trang này không có dữ liệu.");
+  const description = members.map((item, index) => `${(page - 1) * take + index + 1}. <@${item.userId}> — **${item.fullName}**`).join("\n");
+  return {
+    embeds: [infoEmbed(`Danh sách đã đổi tên — trang ${page}/${Math.ceil(total / take)}`, description)],
+    components: paginationComponents("listp:identity", page, total),
+  };
+}
+
+async function buildReactionRoleListPage(guildId: string, page: number) {
+  const take = 10;
+  const [panels, total] = await Promise.all([
+    db.reactionRolePanel.findMany({ where: { guildId }, orderBy: { updatedAt: "desc" }, skip: (page - 1) * take, take, select: { name: true, updatedAt: true } }),
+    db.reactionRolePanel.count({ where: { guildId } }),
+  ]);
+  if (!panels.length) throw new UserFacingError(page === 1 ? "Chưa có reaction role nào." : "Trang này không có dữ liệu.");
+  const description = panels.map((panel, index) => `${(page - 1) * take + index + 1}. **${panel.name}** — cập nhật <t:${Math.floor(panel.updatedAt.getTime() / 1000)}:R>`).join("\n");
+  return {
+    embeds: [infoEmbed(`Danh sách reaction role — trang ${page}/${Math.ceil(total / take)}`, description)],
+    components: paginationComponents("listp:reaction-role", page, total),
+  };
+}
+
+async function buildTechnicianListPage(guild: import("discord.js").Guild, page: number) {
+  const config = await getGuildConfig(guild.id);
+  if (!config.technicianRoleId) throw new UserFacingError("Chưa cấu hình role Technician. Dùng `/config setup`.");
+  const role = await guild.roles.fetch(config.technicianRoleId);
+  if (!role) throw new UserFacingError("Không tìm thấy role Technician đã cấu hình.");
+  const members = [...role.members.values()].sort((left, right) => left.displayName.localeCompare(right.displayName, "vi"));
+  const take = 10;
+  const entries = members.slice((page - 1) * take, page * take);
+  if (!entries.length) throw new UserFacingError(page === 1 ? "Chưa có Technician nào." : "Trang này không có dữ liệu.");
+  const description = entries.map((member, index) => `${(page - 1) * take + index + 1}. ${member} — ${member.displayName}`).join("\n");
+  return {
+    embeds: [infoEmbed(`Danh sách Technician — trang ${page}/${Math.ceil(members.length / take)}`, description)],
+    components: paginationComponents("listp:technicians", page, members.length),
+  };
+}
+
+async function buildAuthorizationRoleListPage(guildId: string, page: number) {
+  const take = 10;
+  const [roles, total] = await Promise.all([
+    db.authorizationRole.findMany({
+      where: { guildId }, orderBy: [{ isSystem: "desc" }, { key: "asc" }], skip: (page - 1) * take, take,
+      include: { _count: { select: { permissions: true, bindings: true } } },
+    }),
+    db.authorizationRole.count({ where: { guildId } }),
+  ]);
+  if (!roles.length) throw new UserFacingError(page === 1 ? "Chưa có role phân quyền." : "Trang này không có dữ liệu.");
+  const description = roles.map((role, index) => `${(page - 1) * take + index + 1}. \`${role.key}\` — **${role.name}**${role.isSystem ? " _(hệ thống)_" : ""}\n${role._count.permissions} permission, ${role._count.bindings} Discord role`).join("\n\n");
+  return {
+    embeds: [infoEmbed(`Role phân quyền — trang ${page}/${Math.ceil(total / take)}`, description)],
+    components: paginationComponents("listp:access-roles", page, total),
+  };
+}
+
+function buildAuthorizationRoleDetailListPage(
+  role: { id: string; name: string; permissions: Array<{ permission: string }>; bindings: Array<{ discordRoleId: string }> },
+  page: number,
+  kind: "permissions" | "bindings",
+) {
+  const items = kind === "permissions" ? role.permissions.map((item) => `• \`${item.permission}\``) : role.bindings.map((item) => `<@&${item.discordRoleId}>`);
+  const take = 10;
+  const entries = items.slice((page - 1) * take, page * take);
+  const label = kind === "permissions" ? "Permission" : "Discord role liên kết";
+  if (!entries.length) throw new UserFacingError(page === 1 ? `Role này chưa có ${kind === "permissions" ? "permission" : "Discord role liên kết"} nào.` : "Trang này không có dữ liệu.");
+  const type = kind === "permissions" ? "access-permissions" : "access-bindings";
+  return {
+    embeds: [infoEmbed(`${label} — ${role.name} — trang ${page}/${Math.ceil(items.length / take)}`, entries.join("\n"))],
+    components: paginationComponents(`listp:${type}:${role.id}`, page, items.length),
+  };
+}
+
+function buildReactionRoleItemListPage(panel: PanelWithItems, page: number) {
+  const take = 10;
+  const entries = panel.items.slice((page - 1) * take, page * take);
+  if (!entries.length) throw new UserFacingError(page === 1 ? "Panel này chưa có role nào." : "Trang này không có dữ liệu.");
+  const description = entries.map((item, index) => `${(page - 1) * take + index + 1}. <@&${item.roleId}> — **${item.label}**${item.emoji ? ` ${item.emoji}` : ""}`).join("\n");
+  return {
+    embeds: [infoEmbed(`Items: ${panel.name} — trang ${page}/${Math.ceil(panel.items.length / take)}`, description)],
+    components: paginationComponents(`listp:rr-items:${panel.id}`, page, panel.items.length),
+  };
+}
+
+function buildReactionRoleFieldListPage(panel: PanelWithItems, page: number) {
+  const take = 3;
+  const entries = panel.fields.slice((page - 1) * take, page * take);
+  if (!entries.length) throw new UserFacingError(page === 1 ? "Panel này chưa có embed field nào." : "Trang này không có dữ liệu.");
+  const description = entries.map((field, index) => `**${(page - 1) * take + index + 1}. ${field.name}**${field.inline ? " *(inline)*" : ""}\n${field.value}`).join("\n\n");
+  const totalPages = Math.ceil(panel.fields.length / take);
+  const controls = totalPages <= 1 ? [] : [new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`listp:rr-fields:${panel.id}:${page - 1}`).setLabel("← Trước").setStyle(ButtonStyle.Secondary).setDisabled(page <= 1),
+    new ButtonBuilder().setCustomId(`listp:rr-fields:${panel.id}:current`).setLabel(`Trang ${page}/${totalPages}`).setStyle(ButtonStyle.Secondary).setDisabled(true),
+    new ButtonBuilder().setCustomId(`listp:rr-fields:${panel.id}:${page + 1}`).setLabel("Sau →").setStyle(ButtonStyle.Secondary).setDisabled(page >= totalPages),
+  )];
+  return { embeds: [infoEmbed(`Fields: ${panel.name} — trang ${page}/${totalPages}`, description)], components: controls };
+}
+
+async function handleListPagination(interaction: import("discord.js").ButtonInteraction, actor: GuildMember) {
+  const [, type, identifier, pageValue] = interaction.customId.split(":");
+  const page = validPage(pageValue ?? identifier);
+  if (type === "identity") {
+    if (!(await hasPermission(actor, PERMISSIONS.IDENTITY_READ))) throw new AuthorizationError("Bạn không có permission `identity.read`.");
+    await interaction.editReply(await buildIdentityListPage(actor.guild.id, page));
+    return;
+  }
+  if (type === "reaction-role") {
+    if (!(await hasPermission(actor, PERMISSIONS.REACTION_ROLE_MANAGE))) throw new AuthorizationError("Bạn không có permission `reaction_role.manage`.");
+    await interaction.editReply(await buildReactionRoleListPage(actor.guild.id, page));
+    return;
+  }
+  if (type === "technicians") {
+    if (!(await hasPermission(actor, PERMISSIONS.TECHNICIAN_MANAGE))) throw new AuthorizationError("Bạn không có permission `technician.manage`.");
+    await interaction.editReply(await buildTechnicianListPage(actor.guild, page));
+    return;
+  }
+  if (type === "access-roles") {
+    if (!(await hasPermission(actor, PERMISSIONS.ACCESS_MANAGE))) throw new AuthorizationError("Bạn không có permission `access.manage`.");
+    await interaction.editReply(await buildAuthorizationRoleListPage(actor.guild.id, page));
+    return;
+  }
+  if (type === "access-permissions" || type === "access-bindings") {
+    if (!identifier) throw new UserFacingError("Dữ liệu danh sách không hợp lệ.");
+    if (!(await hasPermission(actor, PERMISSIONS.ACCESS_MANAGE))) throw new AuthorizationError("Bạn không có permission `access.manage`.");
+    const role = await db.authorizationRole.findUnique({ where: { id: identifier }, include: { permissions: { orderBy: { permission: "asc" } }, bindings: { orderBy: { discordRoleId: "asc" } } } });
+    if (!role || role.guildId !== actor.guild.id) throw new UserFacingError("Không tìm thấy role phân quyền này.");
+    await interaction.editReply(buildAuthorizationRoleDetailListPage(role, page, type === "access-permissions" ? "permissions" : "bindings"));
+    return;
+  }
+  if (type === "rr-items" || type === "rr-fields") {
+    if (!identifier) throw new UserFacingError("Dữ liệu danh sách không hợp lệ.");
+    if (!(await hasPermission(actor, PERMISSIONS.REACTION_ROLE_MANAGE))) throw new AuthorizationError("Bạn không có permission `reaction_role.manage`.");
+    const panel = await getPanelById(identifier);
+    if (panel.guildId !== actor.guild.id) throw new UserFacingError("Panel này không thuộc server hiện tại.");
+    await interaction.editReply(type === "rr-items" ? buildReactionRoleItemListPage(panel, page) : buildReactionRoleFieldListPage(panel, page));
+    return;
+  }
+  throw new UserFacingError("Danh sách này không còn khả dụng.");
+}
+
 async function handleIdentityCommand(interaction: import("discord.js").ChatInputCommandInteraction, actor: GuildMember) {
   const subcommand = interaction.options.getSubcommand();
   const requiredPermission = ["list", "search", "info"].includes(subcommand) ? PERMISSIONS.IDENTITY_READ : PERMISSIONS.IDENTITY_WRITE;
@@ -308,14 +524,7 @@ async function handleIdentityCommand(interaction: import("discord.js").ChatInput
 
   if (subcommand === "list") {
     const page = interaction.options.getInteger("page") ?? 1;
-    const take = 10;
-    const [members, total] = await Promise.all([
-      db.verifiedMember.findMany({ where: { guildId: actor.guild.id, isActive: true }, orderBy: { fullName: "asc" }, skip: (page - 1) * take, take }),
-      db.verifiedMember.count({ where: { guildId: actor.guild.id, isActive: true } }),
-    ]);
-    if (!members.length) throw new UserFacingError(page === 1 ? "Chưa có thành viên nào đổi tên." : "Trang này không có dữ liệu.");
-    const description = members.map((item, index) => `${(page - 1) * take + index + 1}. <@${item.userId}> — **${item.fullName}**`).join("\n");
-    await interaction.editReply({ embeds: [infoEmbed(`Danh sách đã đổi tên — trang ${page}/${Math.ceil(total / take)}`, description)] });
+    await interaction.editReply(await buildIdentityListPage(actor.guild.id, page));
     return;
   }
 
@@ -362,8 +571,7 @@ async function handleTechnicianCommand(interaction: import("discord.js").ChatInp
   if (!role) throw new UserFacingError("Không tìm thấy role Technician đã cấu hình.");
   const subcommand = interaction.options.getSubcommand();
   if (subcommand === "list") {
-    const description = role.members.size ? role.members.map((member) => `${member} — ${member.displayName}`).join("\n").slice(0, 4000) : "Chưa có Technician nào.";
-    await interaction.editReply({ embeds: [infoEmbed("Danh sách Technician", description)] });
+    await interaction.editReply(await buildTechnicianListPage(actor.guild, 1));
     return;
   }
   const user = interaction.options.getUser("member", true);
@@ -429,14 +637,7 @@ async function handleAccessCommand(interaction: import("discord.js").ChatInputCo
   }
 
   if (subcommand === "role-list") {
-    const roles = await db.authorizationRole.findMany({
-      where: { guildId }, orderBy: [{ isSystem: "desc" }, { key: "asc" }],
-      include: { _count: { select: { permissions: true, bindings: true } } },
-    });
-    const description = roles.length
-      ? roles.map((role) => `\`${role.key}\` — **${role.name}**${role.isSystem ? " _(hệ thống)_" : ""}\n${role._count.permissions} permission, ${role._count.bindings} Discord role`).join("\n\n")
-      : "Chưa có role phân quyền.";
-    await interaction.editReply({ embeds: [infoEmbed("Role phân quyền", description)] });
+    await interaction.editReply(await buildAuthorizationRoleListPage(guildId, 1));
     return;
   }
 
@@ -479,14 +680,12 @@ async function handleAccessCommand(interaction: import("discord.js").ChatInputCo
   }
 
   if (subcommand === "permission-list") {
-    const description = role.permissions.length ? role.permissions.map((item) => `• \`${item.permission}\``).join("\n") : "Role này chưa có permission nào.";
-    await interaction.editReply({ embeds: [infoEmbed(`Permission — ${role.name}`, description)] });
+    await interaction.editReply(buildAuthorizationRoleDetailListPage(role, 1, "permissions"));
     return;
   }
 
   if (subcommand === "bindings") {
-    const description = role.bindings.length ? role.bindings.map((item) => `<@&${item.discordRoleId}>`).join("\n") : "Role này chưa liên kết với Discord role nào.";
-    await interaction.editReply({ embeds: [infoEmbed(`Discord role liên kết — ${role.name}`, description)] });
+    await interaction.editReply(buildAuthorizationRoleDetailListPage(role, 1, "bindings"));
     return;
   }
 
@@ -560,14 +759,37 @@ async function handleReactionRoleCommand(interaction: import("discord.js").ChatI
   }
 
   if (subcommand === "panel-list") {
-    const panels = await db.reactionRolePanel.findMany({ where: { guildId }, orderBy: { name: "asc" }, include: { _count: { select: { items: true } } } });
-    const description = panels.length ? panels.map((panel) => `• **${panel.name}** — ${panel.style === "BUTTON" ? "Button" : "Menu"}, ${panel.action}, ${panel._count.items} role${panel.isEnabled ? "" : " (đang tắt)"}`).join("\n") : "Chưa có panel nào.";
-    await interaction.editReply({ embeds: [infoEmbed("Reaction role panels", description)] });
+    const page = interaction.options.getInteger("page") ?? 1;
+    await interaction.editReply(await buildReactionRoleListPage(guildId, page));
     return;
   }
 
   if (subcommand === "builder") {
-    const panel = await getPanel(guildId, interaction.options.getString("name", true), true);
+    const name = interaction.options.getString("name", true).trim();
+    if (!name) throw new UserFacingError("Tên quản lý của panel không được để trống.");
+    const panel = await db.reactionRolePanel.findUnique({
+      where: { guildId_name: { guildId, name } },
+      include: { items: { orderBy: { position: "asc" } }, fields: { orderBy: { position: "asc" } } },
+    });
+    if (!panel) {
+      const token = randomUUID();
+      pendingBuilderCreates.set(token, { guildId, userId: actor.id, name });
+      setTimeout(() => pendingBuilderCreates.delete(token), 15 * 60_000);
+      const createButton = new ButtonBuilder()
+        .setCustomId(`rrbnew:${token}:create`)
+        .setLabel("Tạo panel trống")
+        .setEmoji("➕")
+        .setStyle(ButtonStyle.Success);
+      const cancelButton = new ButtonBuilder()
+        .setCustomId(`rrbnew:${token}:cancel`)
+        .setLabel("Không tạo")
+        .setStyle(ButtonStyle.Secondary);
+      await interaction.editReply({
+        embeds: [infoEmbed("Panel chưa tồn tại", `Không tìm thấy reaction role **${name || "(tên trống)"}**. Bạn có muốn tạo một panel mới, để trống toàn bộ nội dung, rồi mở Builder không?`)],
+        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(createButton, cancelButton)],
+      });
+      return;
+    }
     await interaction.editReply(buildBuilderPreview(panel));
     return;
   }
@@ -644,8 +866,7 @@ async function handleReactionRoleCommand(interaction: import("discord.js").ChatI
 
   if (subcommand === "item-list") {
     const panel = await getPanel(guildId, interaction.options.getString("panel", true), true);
-    const description = panel.items.length ? panel.items.map((item, index) => `${index + 1}. <@&${item.roleId}> — **${item.label}**${item.emoji ? ` ${item.emoji}` : ""}`).join("\n") : "Panel này chưa có role nào.";
-    await interaction.editReply({ embeds: [infoEmbed(`Items: ${panel.name}`, description)] });
+    await interaction.editReply(buildReactionRoleItemListPage(panel, 1));
     return;
   }
 
@@ -681,10 +902,7 @@ async function handleReactionRoleCommand(interaction: import("discord.js").ChatI
 
   if (subcommand === "field-list") {
     const panel = await getPanel(guildId, interaction.options.getString("panel", true), true);
-    const description = panel.fields.length
-      ? panel.fields.map((field, index) => `**${index + 1}. ${field.name}**${field.inline ? " *(inline)*" : ""}\n${field.value}`).join("\n\n")
-      : "Panel này chưa có embed field nào.";
-    await interaction.editReply({ embeds: [infoEmbed(`Fields: ${panel.name}`, description)] });
+    await interaction.editReply(buildReactionRoleFieldListPage(panel, 1));
     return;
   }
 
@@ -770,6 +988,12 @@ function buildBuilderPreview(panel: PanelWithItems) {
     .setLabel("Tác giả & liên kết")
     .setEmoji("👤")
     .setStyle(ButtonStyle.Secondary);
+  const addItemButton = new ButtonBuilder()
+    .setCustomId(`rrb:${panel.id}:add-item`)
+    .setLabel(panel.style === "BUTTON" ? "Thêm button" : "Thêm option")
+    .setEmoji("➕")
+    .setStyle(ButtonStyle.Success)
+    .setDisabled(panel.items.length >= 25);
   const publishChannel = new ChannelSelectMenuBuilder()
     .setCustomId(`rrb:${panel.id}:publish`)
     .setPlaceholder("Chọn channel để publish panel")
@@ -780,14 +1004,14 @@ function buildBuilderPreview(panel: PanelWithItems) {
   return {
     embeds: preview.embeds,
     components: [
-      new ActionRowBuilder<ButtonBuilder>().addComponents(contentButton, visualButton, authorButton, fieldButton),
+      new ActionRowBuilder<ButtonBuilder>().addComponents(contentButton, visualButton, authorButton, fieldButton, addItemButton),
       new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(publishChannel),
     ],
   };
 }
 
 async function handleBuilderComponent(
-  interaction: import("discord.js").ButtonInteraction | import("discord.js").ChannelSelectMenuInteraction,
+  interaction: import("discord.js").ButtonInteraction | import("discord.js").ChannelSelectMenuInteraction | import("discord.js").RoleSelectMenuInteraction,
   actor: GuildMember,
 ) {
   if (!(await hasPermission(actor, PERMISSIONS.REACTION_ROLE_MANAGE))) throw new AuthorizationError("Bạn không có permission `reaction_role.manage`.");
@@ -801,7 +1025,29 @@ async function handleBuilderComponent(
     else if (action === "visual") await interaction.showModal(buildVisualModal(panel));
     else if (action === "author") await interaction.showModal(buildAuthorModal(panel));
     else if (action === "field") await interaction.showModal(buildFieldModal(panel));
+    else if (action === "add-item") {
+      const rolePicker = new RoleSelectMenuBuilder()
+        .setCustomId(`rrb:${panel.id}:pick-role`)
+        .setPlaceholder(panel.style === "BUTTON" ? "Chọn role để thêm button" : "Chọn role để thêm option")
+        .setMinValues(1)
+        .setMaxValues(1);
+      await interaction.update({
+        embeds: [infoEmbed(panel.style === "BUTTON" ? "Thêm button" : "Thêm option", "Chọn Discord role, sau đó nhập nhãn, emoji và mô tả trong form tiếp theo.")],
+        components: [new ActionRowBuilder<RoleSelectMenuBuilder>().addComponents(rolePicker)],
+      });
+    }
     else throw new UserFacingError("Nút Builder không hợp lệ.");
+    return;
+  }
+
+  if (interaction.isRoleSelectMenu()) {
+    if (action !== "pick-role") throw new UserFacingError("Lựa chọn Builder không hợp lệ.");
+    if (panel.items.length >= 25) throw new UserFacingError("Một panel Discord chỉ chứa tối đa 25 role.");
+    const roleId = interaction.values[0];
+    const role = await actor.guild.roles.fetch(roleId);
+    if (!role) throw new UserFacingError("Không tìm thấy role này trong server.");
+    await ensureAssignableRole(actor.guild, role);
+    await interaction.showModal(buildItemModal(panel, role.id, role.name));
     return;
   }
 
@@ -814,9 +1060,35 @@ async function handleBuilderComponent(
   await interaction.editReply({ embeds: [successEmbed("Đã publish panel", `Panel **${panel.name}** đã được gửi tại ${sent.channel}.`)] });
 }
 
+async function handleBuilderCreateConfirmation(interaction: import("discord.js").ButtonInteraction, actor: GuildMember) {
+  if (!(await hasPermission(actor, PERMISSIONS.REACTION_ROLE_MANAGE))) throw new AuthorizationError("Bạn không có permission `reaction_role.manage`.");
+  const [, token, action] = interaction.customId.split(":");
+  const pending = token ? pendingBuilderCreates.get(token) : undefined;
+  if (!pending || !action) throw new UserFacingError("Yêu cầu tạo panel đã hết hạn. Hãy chạy lại `/reaction-role builder`.");
+  if (pending.guildId !== actor.guild.id || pending.userId !== actor.id) throw new UserFacingError("Bạn không thể xác nhận yêu cầu tạo panel của người khác.");
+  pendingBuilderCreates.delete(token);
+
+  if (action === "cancel") {
+    await interaction.editReply({ embeds: [infoEmbed("Đã hủy", "Không có reaction role mới nào được tạo.")], components: [] });
+    return;
+  }
+  if (action !== "create") throw new UserFacingError("Lựa chọn tạo panel không hợp lệ.");
+
+  const panel = await createPanel({
+    guildId: actor.guild.id,
+    name: pending.name,
+    style: "BUTTON",
+    action: "TOGGLE",
+    title: "",
+    createdBy: actor.id,
+  });
+  const fresh = await getPanelById(panel.id);
+  await interaction.editReply(buildBuilderPreview(fresh));
+}
+
 async function handleBuilderModal(interaction: import("discord.js").ModalSubmitInteraction, actor: GuildMember) {
   if (!(await hasPermission(actor, PERMISSIONS.REACTION_ROLE_MANAGE))) throw new AuthorizationError("Bạn không có permission `reaction_role.manage`.");
-  const [, panelId, section] = interaction.customId.split(":");
+  const [, panelId, section, selectedRoleId] = interaction.customId.split(":");
   if (!panelId || !section) throw new UserFacingError("Dữ liệu Modal không hợp lệ.");
   const panel = await getPanelById(panelId);
   if (panel.guildId !== actor.guild.id) throw new UserFacingError("Panel này không thuộc server hiện tại.");
@@ -842,6 +1114,18 @@ async function handleBuilderModal(interaction: import("discord.js").ModalSubmitI
     const value = interaction.fields.getTextInputValue("value");
     const inlineValue = interaction.fields.getTextInputValue("inline").trim().toLowerCase();
     await addEmbedField({ panelId: panel.id, name, value, inline: ["yes", "y", "co", "có"].includes(inlineValue) });
+  } else if (section === "add-item") {
+    if (!selectedRoleId) throw new UserFacingError("Không xác định được role cần thêm.");
+    const role = await actor.guild.roles.fetch(selectedRoleId);
+    if (!role) throw new UserFacingError("Không tìm thấy role này trong server.");
+    await ensureAssignableRole(actor.guild, role);
+    await addItem({
+      panelId: panel.id,
+      roleId: role.id,
+      label: interaction.fields.getTextInputValue("label"),
+      emoji: interaction.fields.getTextInputValue("emoji"),
+      description: interaction.fields.getTextInputValue("description"),
+    });
   } else {
     throw new UserFacingError("Loại Modal không hợp lệ.");
   }

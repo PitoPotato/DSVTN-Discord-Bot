@@ -122,6 +122,7 @@ Sau mỗi lần chạy `npm run commands:deploy`, Discord Administrator cần c�
 |---|---|
 | `/identity` | Đội Trưởng, Technician |
 | `/reaction-role` | Đội Trưởng, Technician |
+| `/ping` | Mọi thành viên |
 | `/system-check` | Đội Trưởng, Technician |
 | `/config` | Chỉ Đội Trưởng |
 | `/technician` | Chỉ Đội Trưởng |
@@ -226,7 +227,7 @@ Mỗi panel có tối đa 25 role. Button được xếp tối đa 5 button trê
 ### 9.3. Chỉnh và quản lý panel
 
 ```text
-/reaction-role panel-list
+/reaction-role panel-list page:1
 /reaction-role panel-info name:"ban-hoat-dong"
 /reaction-role panel-edit name:"ban-hoat-dong" title:"Tên mới" color:#3498DB footer:"DSVTN - HCMUS"
 /reaction-role item-list panel:"ban-hoat-dong"
@@ -254,9 +255,12 @@ Bot gửi preview embed cùng hai button và một channel picker:
 | `Chỉnh nội dung` | Mở Modal sửa tiêu đề, mô tả và footer |
 | `Chỉnh giao diện` | Mở Modal sửa màu, ảnh lớn và thumbnail |
 | `Thêm field` | Mở Modal thêm tên, nội dung và tùy chọn inline cho embed field |
+| `Thêm button` / `Thêm option` | Chọn role, rồi nhập nhãn, emoji và mô tả cho button/menu option |
 | Channel picker | Chọn channel để publish panel ngay từ Builder |
 
-Khi submit Modal, dữ liệu được lưu vào database. Nếu panel đã publish, bot tự cập nhật embed ở channel đó. Phần chọn Discord role vẫn dùng `/reaction-role item-add`, vì role picker của slash command chính xác và an toàn hơn việc gõ tên role trong Modal.
+Khi submit Modal, dữ liệu được lưu vào database. Nếu panel đã publish, bot tự cập nhật embed ở channel đó. Builder dùng role picker để thêm button/option; `/reaction-role item-add` vẫn hữu ích khi cần thao tác bằng slash command.
+
+Các lệnh danh sách có nhiều trang có nút `← Trước` và `Sau →`; mỗi lần bấm bot cập nhật đúng message riêng tư đang xem. `/reaction-role panel-list` chỉ hiển thị tên panel và thời điểm cập nhật, sắp theo lần cập nhật mới nhất. Nếu chạy `/reaction-role builder` với một tên chưa tồn tại, bot sẽ hỏi có muốn tạo panel trống hay không. Khi đồng ý, bot tạo panel mặc định Button + lấy/gỡ role, để trống phần embed và mở Builder ngay.
 
 ### 9.5. Quản lý Embed Fields
 
