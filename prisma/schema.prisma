@@ -1,0 +1,98 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model GuildConfig {
+  guildId              String @id
+  renameWarningChannelId String?
+  leaderRoleId         String?
+  technicianRoleId     String?
+  verifiedRoleId       String?
+  unverifiedRoleId     String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+enum ReactionRoleStyle {
+  BUTTON
+  MENU
+}
+
+enum ReactionRoleAction {
+  ADD_ONLY
+  REMOVE_ONLY
+  TOGGLE
+}
+
+model ReactionRolePanel {
+  id            String              @id @default(cuid())
+  guildId       String
+  name          String
+  style         ReactionRoleStyle
+  action        ReactionRoleAction
+  maxSelections Int                 @default(1)
+  title         String
+  description   String?
+  color         Int                 @default(3447003)
+  footer        String?
+  imageUrl      String?
+  thumbnailUrl  String?
+  channelId     String?
+  messageId     String?
+  isEnabled     Boolean             @default(true)
+  createdBy     String
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  items         ReactionRoleItem[]
+  fields        ReactionRoleEmbedField[]
+
+  @@unique([guildId, name])
+  @@index([guildId, isEnabled])
+}
+
+model ReactionRoleEmbedField {
+  id        String            @id @default(cuid())
+  panelId   String
+  name      String
+  value     String
+  inline    Boolean           @default(false)
+  position  Int               @default(0)
+  createdAt DateTime          @default(now())
+  panel     ReactionRolePanel @relation(fields: [panelId], references: [id], onDelete: Cascade)
+
+  @@index([panelId, position])
+}
+
+model ReactionRoleItem {
+  id          String            @id @default(cuid())
+  panelId     String
+  roleId      String
+  label       String
+  emoji       String?
+  description String?
+  position    Int               @default(0)
+  createdAt   DateTime          @default(now())
+  panel       ReactionRolePanel @relation(fields: [panelId], references: [id], onDelete: Cascade)
+
+  @@unique([panelId, roleId])
+  @@index([panelId, position])
+}
+
+model VerifiedMember {
+  id         String   @id @default(cuid())
+  guildId    String
+  userId     String
+  fullName   String
+  verifiedAt DateTime @default(now())
+  verifiedBy String?
+  updatedAt  DateTime @updatedAt
+  isActive   Boolean  @default(true)
+
+  @@unique([guildId, userId])
+  @@index([guildId, fullName])
+}
