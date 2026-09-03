@@ -51,7 +51,7 @@ import {
   validateHttpUrl,
 } from "./services/reaction-role.service.js";
 import { runSystemCheck } from "./services/system-check.service.js";
-import { rejectInteraction, warnMessageAndDelete, warnUnverified, warnVoice } from "./services/warning.service.js";
+import { rejectInteraction, shouldBlockUnverifiedMessage, warnMessageAndDelete, warnUnverified, warnVoice } from "./services/warning.service.js";
 import { logBotError } from "./services/error-log.service.js";
 import { logTerminal, type TerminalLogStatus } from "./services/terminal-log.service.js";
 import { setGuildNotificationFooter, warmGuildNotificationFooter, withGuildNotificationFooter } from "./services/notification-footer.service.js";
@@ -91,7 +91,7 @@ process.on("uncaughtException", (error) => {
 
 client.on("messageCreate", async (message) => {
   try {
-    if (message.author.bot || !message.guild || !message.member) return;
+    if (!message.guild || !message.member || !shouldBlockUnverifiedMessage(message)) return;
     const guild = message.guild;
     await withGuildNotificationFooter(guild.id, async () => {
       const renameMatch = message.content.match(/^!dsvtn\s+doiten(?:\s+([\s\S]*?))?\s*$/i);
@@ -130,7 +130,7 @@ client.on("messageReactionAdd", async (reaction, user) => {
 
 client.on("voiceStateUpdate", async (oldState, newState) => {
   try {
-    if (!newState.member || !newState.channel || oldState.channelId === newState.channelId) return;
+    if (!newState.member || newState.member.user.bot || !newState.channel || oldState.channelId === newState.channelId) return;
     if (await isVerified(newState.guild.id, newState.id)) return;
     await withGuildNotificationFooter(newState.guild.id, async () => {
       await newState.disconnect("Chưa xác nhận tên với DSVTN bot").catch(() => undefined);
@@ -144,7 +144,7 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
 
 client.on("interactionCreate", async (interaction) => {
   try {
-    if (!interaction.guild || !interaction.member) return;
+    if (!interaction.guild || !interaction.member || interaction.user.bot) return;
     const guild = interaction.guild;
     await withGuildNotificationFooter(guild.id, async () => {
     const isBuilderModal = interaction.isModalSubmit() && interaction.customId.startsWith("rrbmodal:");

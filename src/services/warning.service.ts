@@ -1,10 +1,20 @@
-import { Guild, GuildMember, Message, MessageFlags, RepliableInteraction, User } from "discord.js";
+import { Guild, GuildMember, Message, MessageFlags, MessageType, RepliableInteraction, User } from "discord.js";
 import { errorEmbed } from "../embeds.js";
 import { getGuildConfig } from "./config.service.js";
+
+/**
+ * Discord posts a separate system message in the parent channel when a thread
+ * is created. Deleting that system message leaves an empty thread behind, so
+ * only the author's actual message inside the thread should be moderated.
+ */
+export function shouldBlockUnverifiedMessage(message: Pick<Message, "author" | "type">): boolean {
+  return !message.author.bot && message.type !== MessageType.ThreadCreated;
+}
 
 const instruction = "Để thuận tiện nhận diện và làm việc cùng nhau trong Đội, bạn vui lòng xác nhận **họ và tên thật, đầy đủ** trước khi sử dụng server.\n\nDùng `/doiten name:<Họ và tên đầy đủ>` hoặc `!dsvtn Doiten <Họ và tên đầy đủ>`.";
 
 export async function warnUnverified(guild: Guild, user: User, location: string): Promise<void> {
+  if (user.bot) return;
   const embed = errorEmbed("Bạn chưa đổi tên", instruction);
 
   await Promise.allSettled([
@@ -14,6 +24,7 @@ export async function warnUnverified(guild: Guild, user: User, location: string)
 }
 
 export async function warnMessageAndDelete(message: Message): Promise<void> {
+  if (!shouldBlockUnverifiedMessage(message)) return;
   await message.delete().catch(() => undefined);
   const notice = message.channel.isSendable()
     ? await message.channel.send({ embeds: [errorEmbed("Bạn chưa đổi tên", instruction)] }).catch(() => undefined)
@@ -23,6 +34,7 @@ export async function warnMessageAndDelete(message: Message): Promise<void> {
 }
 
 export async function rejectInteraction(interaction: RepliableInteraction, location: string): Promise<void> {
+  if (interaction.user.bot) return;
   if (interaction.deferred) {
     await interaction.editReply({ embeds: [errorEmbed("Bạn chưa đổi tên", instruction)] }).catch(() => undefined);
   } else if (!interaction.replied) {
@@ -32,6 +44,7 @@ export async function rejectInteraction(interaction: RepliableInteraction, locat
 }
 
 export async function warnVoice(member: GuildMember, channelName: string): Promise<void> {
+  if (member.user.bot) return;
   await warnUnverified(member.guild, member.user, `voice channel **${channelName}**`);
 }
 
